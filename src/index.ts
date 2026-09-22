@@ -35,6 +35,13 @@ const resourceServer = new x402ResourceServer(facilitator).register(
 const app = express();
 app.disable("x-powered-by");
 
+// Hosts like Render, Fly and Cloud Run terminate TLS in front of the app, so
+// trust the first proxy hop: otherwise the 402 body advertises
+// `http://host/...` instead of the public https origin registered in
+// service.yaml, and buyers would see a resource URL that is not the one they
+// called.
+app.set("trust proxy", 1);
+
 app.get("/healthz", (_req, res) => {
   res.json({ ok: true, network: chain.network, asset: chain.assetSymbol, price });
 });
