@@ -302,9 +302,10 @@ app.get("/healthz", (_req, res) => {
   });
 });
 
-// 3. Payment gate. Order matters: more specific patterns first, because x402
-//    matches with `.find()` and returns the first hit. `latest` must precede the
-//    `/v1/*` catch-all; the `*..*` range pattern must precede it too.
+// 3. Payment gate. Order matters: x402 matches with `.find()` and returns the
+//    FIRST hit, so more specific patterns MUST precede the `/v1/*` catch-all.
+//    `/v1/convert` is a literal path and must come before `/v1/*`, otherwise the
+//    catch-all swallows it and charges the standard price.
 app.use(
   paymentMiddleware(
     {
@@ -318,14 +319,14 @@ app.use(
         description: "Frankfurter time series over a date range (premium)",
         mimeType: "application/json",
       },
-      "GET /v1/*": {
-        accepts: { scheme: "exact", price: stdPrice, network: chain.network, payTo, maxTimeoutSeconds: 60 },
-        description: "Frankfurter single historical day",
-        mimeType: "application/json",
-      },
       "GET /v1/convert": {
         accepts: { scheme: "exact", price: convertPrice, network: chain.network, payTo, maxTimeoutSeconds: 60 },
         description: "Server-computed currency conversion (premium)",
+        mimeType: "application/json",
+      },
+      "GET /v1/*": {
+        accepts: { scheme: "exact", price: stdPrice, network: chain.network, payTo, maxTimeoutSeconds: 60 },
+        description: "Frankfurter single historical day",
         mimeType: "application/json",
       },
     },

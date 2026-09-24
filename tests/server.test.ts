@@ -46,6 +46,17 @@ describe("tiered pricing", () => {
     expect(r.headers["payment-required"]).toBeTruthy();
   });
 
+  it("prices convert as premium (== time series, > latest)", async () => {
+    const latest = await request(app).get("/v1/latest?base=USD&symbols=CNY");
+    const series = await request(app).get("/v1/2024-01-01..2024-01-31?base=USD&symbols=EUR");
+    const convert = await request(app).get("/v1/convert?from=USD&to=CNY&amount=100");
+    const latestAmount = decodeAmount(latest.headers["payment-required"]);
+    const seriesAmount = decodeAmount(series.headers["payment-required"]);
+    const convertAmount = decodeAmount(convert.headers["payment-required"]);
+    expect(BigInt(convertAmount)).toBe(BigInt(seriesAmount));
+    expect(BigInt(convertAmount)).toBeGreaterThan(BigInt(latestAmount));
+  });
+
   it("charges more on the time-series tier than the latest tier", async () => {
     const latest = await request(app).get("/v1/latest?base=USD&symbols=CNY");
     const series = await request(app).get("/v1/2024-01-01..2024-01-31?base=USD&symbols=EUR");
