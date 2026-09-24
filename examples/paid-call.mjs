@@ -25,7 +25,10 @@
  * Prereqs:
  *   - the service is deployed and BASE_URL points at it
  *   - the paying key holds testnet pieUSD on eip155:2368
- *   - `npm install` has run (provides @x402/* and viem)
+ *   - `npm install` has run (provides @x402/*, viem, undici)
+ *   - if your network needs a proxy to reach foreign hosts (onrender.com /
+ *     facilitator.pieverse.io), export HTTPS_PROXY=http://<host>:<port> first;
+ *     the script routes all fetches through it automatically.
  *
  * Run:
  *   BUYER_PRIVATE_KEY=0x... node examples/paid-call.mjs
@@ -40,6 +43,19 @@ import { privateKeyToAccount } from "viem/accounts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+// Proxy support: Node's global fetch (undici) ignores HTTPS_PROXY by default, so
+// on a machine that needs a proxy to reach foreign hosts (onrender.com,
+// facilitator.pieverse.io) every call fails with ECONNRESET. If a proxy env var
+// is present, route ALL fetches through it via undici's global dispatcher.
+const proxyUrl =
+  process.env.HTTPS_PROXY || process.env.https_proxy ||
+  process.env.HTTP_PROXY || process.env.http_proxy;
+if (proxyUrl) {
+  const { ProxyAgent, setGlobalDispatcher } = await import("undici");
+  setGlobalDispatcher(new ProxyAgent(proxyUrl));
+  console.log("proxy         :", proxyUrl);
+}
 
 const NET = "eip155:2368";
 const ASSET = "0x38129cf4CE5E183eFF248F42A7D345Bb1B47621A"; // pieUSD

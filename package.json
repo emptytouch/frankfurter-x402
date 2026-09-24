@@ -11,13 +11,15 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "selfpay": "node examples/paid-call.mjs"
+    "selfpay": "node examples/paid-call.mjs",
+    "proof": "node examples/fill-proof.mjs"
   },
   "dependencies": {
     "@x402/core": "^2.25.0",
     "@x402/evm": "^2.25.0",
     "@x402/express": "^2.25.0",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "undici": "^6.21.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
