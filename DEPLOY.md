@@ -68,9 +68,14 @@ Render → 你的服务 → **Environment** → 添加：
 | `PAY_TO` | `0x9e610cd701472bf7c815a6404b6ff88d81838c91` | 你的 Kite 钱包（收款地址） |
 | `KITE_NETWORK` | `testnet` | 走 `eip155:2368` + 免费 pieUSD，与 service.yaml 一致 |
 | `UPSTREAM_URL` | `https://api.frankfurter.dev` | 被代理的上游 |
-| `PRICE_USD` | `0.001` | 每次调用价格（字符串） |
+| `PRICE_USD` | `0.001` | 标准档：`/v1/latest` 与单日历史（字符串） |
+| `PRICE_USD_RANGE` | `0.01` | 时间序列档：`/v1/{start}..{end}`（字符串） |
+| `CONVERT_PRICE_USD` | `0.01` | 计算端点档：`/v1/convert`（字符串） |
+| `RATE_LIMIT_PER_MIN` | `10` | 每客户端付费请求限流；`0` 关闭 |
 
 > **不要手动设 `PORT`**——Render 自动注入（默认 10000），应用已读 `process.env.PORT`。保存后 Render 会自动重新部署。
+
+**改动 env 不会自动重新部署**（见主仓库 `render-x402-deploy` 笔记）：改完变量后需到 Render 手动触发一次 **Manual Deploy**（Clear build cache 可选）。本服务代码改动走 push → 因为是用 Render API 建的实例，**push 也不会自动触发部署**，同样需要手动 Deploy。
 
 ---
 

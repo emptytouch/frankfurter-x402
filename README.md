@@ -1,50 +1,90 @@
-# Frankfurter Exchange Rates
+# Frankfurter Exchange Rates + Conversion (x402 on Kite)
 
 Wraps the free, open-source [Frankfurter](https://frankfurter.dev) exchange-rate
-API as an x402 service on the Kite chain. Built from the official
-`typescript-express` x402 template.
+API as an x402 service on the Kite chain, and adds a **server-computed currency
+conversion** endpoint. Built from the official `typescript-express` x402 template,
+then extended well past the stock wrapper.
 
 | | |
 |---|---|
-| `GET /v1/latest` | latest rates → `https://api.frankfurter.dev/v1/latest` |
+| `GET /v1/latest` | latest reference rates → `https://api.frankfurter.dev/v1/latest` |
 | `GET /v1/{YYYY-MM-DD}` | one historical day, e.g. `/v1/2024-01-02` |
 | `GET /v1/{START}..{END}` | time series over a date range, e.g. `/v1/2024-01-01..2024-01-31` |
-| Price | $0.001 per call in pieUSD (Kite testnet, `eip155:2368`) |
-| Upstream auth | none |
+| `GET /v1/convert` | **computed** conversion, e.g. `/v1/convert?from=USD&to=CNY&amount=100` |
+| Price | `latest` + single day **$0.001**; time series + `convert` **$0.01** (pieUSD, Kite testnet `eip155:2368`) |
+| Upstream auth | none (Frankfurter is free & keyless) |
 | Deployed | `status: testnet` — https://frankfurter-x402.onrender.com |
-| Paid proof | tx `0xab67ffbb91c57fc4825553a62b41122ba5c463e703c11d7441f1aaff1409a6aa` |
+| Paid proof | see `PROOF.md` |
 
-## Why this is not a `.env`-only wrapper
+## Why this is more than a `.env`-only wrapper
 
-Frankfurter requires its `/v1` prefix:
+Frankfurter requires its `/v1` prefix, so the stock template's "strip `/v1`"
+contract would 404 every paid request. We forward the request path unchanged
+(`src/index.ts` → `proxyRequest`). On top of that plumbing, this service adds
+four production layers the stock template lacks:
 
-```console
-$ curl -s -o /dev/null -w '%{http_code}\n' https://api.frankfurter.dev/latest?base=USD
-404
-$ curl -s -o /dev/null -w '%{http_code}\n' https://api.frankfurter.dev/v1/latest?base=USD
-200
+1. **Tiered pricing** — a single snapshot is cheap; a multi-day series (far
+   larger payload) and the server-computed `convert` are premium. The split
+   reflects *value*, not upstream cost (Frankfurter is free).
+2. **Computed value-add (`/v1/convert`)** — the honest reason to charge for a
+   free API: the buyer pays for a calculation (rate lookup + arithmetic), not
+   just a proxied endpoint.
+3. **Read-through cache** with TTL + `Age`/`Cache-Control`: `latest` is cached
+   briefly (FX rates refresh ~daily), historical queries are immutable and
+   cached long. Cuts upstream load. Payment still happens per request — caching
+   only saves the upstream call.
+4. **Per-client rate limiting + structured JSON logs**, applied *after* the
+   payment gate, so only paid calls consume the limit.
+
+## Architecture
+
+```
+            buyer
+              │  GET /v1/latest | /v1/{date} | /v1/{start}..{end} | /v1/convert
+              ▼
+   ┌──────────────────────────────────────────────────────────────┐
+   │  frankfurter-x402 (Express, this repo)                         │
+   │                                                                │
+   │   /healthz ──────────────► 200 (free discovery)                │
+   │                                                                │
+   │   paymentMiddleware ─────► 402 + PAYMENT-REQUIRED (exact,       │
+   │   (x402 gate)                 pieUSD, eip155:2368)             │
+   │        │ verified                                              │
+   │        ▼                                                       │
+   │   rateLimit (per-IP) ──► 429 when over RATE_LIMIT_PER_MIN       │
+   │        │                                                       │
+   │        ├── /v1/convert ─► computeConversion()  (local math)     │
+   │        │                                                        │
+   │        └── /v1/* ───────► proxyRequest()                         │
+   │                                  │                              │
+   │                          ┌───────┴────────┐                     │
+   │                          │  in-memory     │  miss               │
+   │                          │  cache (TTL)   │────────► fetch       │
+   │                          └───────┬────────┘                     │
+   │                                  │ hit                          │
+   │                                  ▼                              │
+   │                          Frankfurter API                        │
+   │                          api.frankfurter.dev                    │
+   └──────────────────────────────────────────────────────────────┘
+              │ settle (EIP-3009 transferWithAuthorization)
+              ▼
+        Kite facilitator (facilitator.pieverse.io/v2)
+              │
+              ▼
+        Kite chain · pieUSD (eip155:2368)
 ```
 
-The stock template strips `/v1` from the inbound path (`CONTRIBUTING.md` step 3
-of *Adding a service* describes the contract as "proxied to `UPSTREAM_URL` with
-the `/v1` prefix stripped"), which would forward every paid request to
-`/latest` and get a 404 back. Following the "edit the proxy code only when the
-upstream needs request rewriting" exception, this wrapper forwards the request
-path unchanged:
+## Tiered pricing
 
-```ts
-const target = new URL(req.originalUrl, upstream);
-```
+| Endpoint | Tier | Price | Notes |
+|---|---|---|---|
+| `GET /v1/latest` | standard | $0.001 | latest snapshot |
+| `GET /v1/{YYYY-MM-DD}` | standard | $0.001 | single historical day |
+| `GET /v1/{START}..{END}` | premium | $0.01 | time series — large payload |
+| `GET /v1/convert` | premium | $0.01 | server-computed conversion |
 
-`src/kite.ts` is untouched. Two smaller differences from the stock template:
-`app.set("trust proxy", 1)`, so the 402 `resource.url` advertises the public
-https origin rather than `http://` behind a TLS-terminating host, and
-`UPSTREAM_URL` holds the origin only (no path).
-
-Because the forwarded path is untouched, all three Frankfurter routes come
-through the same `/v1/*path` handler and share the single `PRICE_USD`.
-Frankfurter's own path grammar does the rest of the work — no per-endpoint
-routing in the wrapper.
+Prices are env-driven: `PRICE_USD` (standard), `PRICE_USD_RANGE` (series),
+`CONVERT_PRICE_USD` (convert).
 
 ## Run locally
 
@@ -62,50 +102,64 @@ so `localhost` and tunnels that require a browser check will not work.
 
 ```bash
 curl -i "$BASE_URL/healthz"
-# 200 {"ok":true,"network":"eip155:2368","asset":"pieUSD","price":"$0.001"}
+# 200 { ok:true, network:"eip155:2368", asset:"pieUSD", tiers:{...}, rateLimitPerMin:10, cache:{...} }
 
 curl -i "$BASE_URL/v1/latest?base=USD&symbols=CNY,EUR,JPY"
 # 402 with a PAYMENT-REQUIRED header until a payment is attached
 
-kpass session execute --method GET \
-  --url "$BASE_URL/v1/latest?base=USD&symbols=CNY,EUR,JPY"
-# 200 + Frankfurter JSON, settled in pieUSD, tx hash in PAYMENT-RESPONSE
+curl -i "$BASE_URL/v1/convert?from=USD&to=CNY&amount=100"
+# 402 until paid, then 200 { from, to, amount, rate, converted, date }
 ```
 
-Each declared endpoint is verified against the upstream it forwards to:
+### Self-pay buyer script (verify payment yourself)
 
-```console
-$ curl -s -o /dev/null -w '%{http_code}\n' "https://api.frankfurter.dev/v1/latest?base=USD&symbols=CNY,EUR,JPY"
-200
-$ curl -s -o /dev/null -w '%{http_code}\n' "https://api.frankfurter.dev/v1/2024-01-02?base=USD&symbols=EUR"
-200
-$ curl -s -o /dev/null -w '%{http_code}\n' "https://api.frankfurter.dev/v1/2024-01-01..2024-01-31?base=USD&symbols=EUR"
-200
+`kpass session execute` currently refuses this host client-side — Kite's
+executable-service catalog does not yet include `frankfurter-x402.onrender.com`
+— so use the buyer script, which signs the EIP-3009 payment directly:
+
+```bash
+# any Kite testnet key holding pieUSD
+BUYER_PRIVATE_KEY=0x... npm run selfpay
+
+# or a Kite Passport sandbox session
+KITE_SESSION_FILE=/path/to/sessions.json npm run selfpay
+
+# pick an endpoint
+FX_ENDPOINT=convert FX_FROM=USD FX_TO=CNY FX_AMOUNT=100 npm run selfpay
 ```
+
+Settlement tx hashes are appended to `proof/paid-calls.jsonl`.
+
+## Cache
+
+`latest` is cached for 1h; historical/series queries are immutable and cached
+for 30d (capped at 200 entries, LRU-ish eviction). Cache hits replay the stored
+response with an `Age` header and a `public, max-age=…` `Cache-Control`. Only
+successful GETs are cached.
+
+## Rate limiting & logs
+
+`RATE_LIMIT_PER_MIN` (default 10, `0` disables) caps paid requests per client IP.
+Logs are one-line JSON: `listening`, `proxy_ok`, `cache_hit`, `upstream_unreachable`,
+`rate_limited`, `convert_upstream_unreachable`.
+
+## Tests
+
+```bash
+npm test
+```
+
+Covers: `/healthz` shape, the 402 gate, tiered-amount assertions (series >
+latest, day == latest), rate-limiter unit tests, `computeConversion` math, and
+`fetchUpstream` forwarding. The facilitator is mocked locally (no network).
 
 ## Status
 
-`testnet`. The service answers the x402 challenge on `eip155:2368` in pieUSD,
-and a paid call has settled on-chain:
-
-```json
-{
-  "network": "eip155:2368",
-  "payer": "0x92DF53ED56E3baCc6b9F2b1E10ACdA5355Fbf9C9",
-  "payTo": "0x9e610Cd701472bF7C815a6404B6Ff88D81838C91",
-  "amount": "1000000000000000",
-  "transaction": "0xab67ffbb91c57fc4825553a62b41122ba5c463e703c11d7441f1aaff1409a6aa"
-}
-```
-
-Unpaid → `402`, paid → `200` with the Frankfurter payload. Note: `kpass session
-execute` currently refuses this host client-side — Kite's executable-service
-catalog does not yet include `frankfurter-x402.onrender.com` — so the paid call
-above was signed with a Kite Passport sandbox session key via the `@x402` client
-SDK against the Kite facilitator (`https://facilitator.pieverse.io/v2`). Asking
-Kite to admit the host to the catalog enables the CLI path for regular buyers.
+`testnet`. The service answers the x402 challenge on `eip155:2368` in pieUSD.
+A paid call has settled on-chain — see `PROOF.md`. Unpaid → `402`, paid → `200`
+with the Frankfurter payload (or the computed conversion for `/v1/convert`).
 
 ## Related contribution
 
-The same wrapper is proposed to the KiteAI community catalog as
+Proposed to the KiteAI community catalog as
 [`gokite-ai/kite-x402-services#4`](https://github.com/gokite-ai/kite-x402-services/pull/4).
